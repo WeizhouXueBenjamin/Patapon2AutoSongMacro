@@ -23,6 +23,8 @@ allSongs := Map(
     "charge", charge,
     "miracle", miracle
 )
+beat := 500 ; ms per beat (adjust as needed)
+tempo := beat*5 ; ms per beat (adjust as needed)
 
 
 ; =====================
@@ -38,14 +40,13 @@ Hotkey "$" repeatKey, ToggleRepeatMode
 ; =====================
 
 SinglePress(key) {
-    Send "{" key " down}"
-    Sleep 50
-    Send "{" key " up}"
+    Send key
+    return
 }
 
 DoublePress(key) {
     SinglePress(key)
-    Sleep 100  ; Short delay between presses
+    HP_Sleep(100)  ; Short delay between presses
     SinglePress(key)
 }
 
@@ -80,11 +81,11 @@ paused(*) {
 ; The March of Mobility
 move(*) {
     SinglePress(pata)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pata)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pata)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pon)
 }
 
@@ -92,53 +93,53 @@ move(*) {
 ; The Aria of Attack
 attack(*) {
     SinglePress(pon)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pon)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pata)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pon)
 }
 
 ; The Lament of Defense
 defense(*) {
     SinglePress(chika)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(chika)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pata)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pon)
 }
 
 ; The Requiem of Retreat
 retreat(*) {
     SinglePress(pon)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pata)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pon)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pata)
 }
 
 ; The Hold-Tight Hoe-Down
 charge(*) {
     SinglePress(pon)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(pon)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(chika)
-    Sleep 430
+    HP_Sleep(beat)
     SinglePress(chika)
 }
 
 ; The Song of Miracles
 miracle(*) {
     SinglePress(don)
-    Sleep 430
+    HP_Sleep(beat)
     DoublePress(don)
-    Sleep 430
+    HP_Sleep(beat)
     DoublePress(don)
 }
 
@@ -186,11 +187,115 @@ QueueSong(funcName) {
     }
 }
 
-; === PLAYBACK allSongs ===
+; --- High-res timer functions ---
+global tempoError := 0
+HP_Sleep(timeInMs) {
+    global tempoError
+    static freq := 0, init := DllCall("QueryPerformanceFrequency", "Int64*", &freq)
+    
+    ; 1. Calculate adjusted sleep time (with error compensation)
+    adjustedMS := timeInMs - tempoError
+    adjustedMS := Max(adjustedMS, 10)  ; Enforce minimum 10ms sleep
+    
+    ; 2. Convert to QPC units (integer math only)
+    DllCall("QueryPerformanceCounter", "Int64*", &start := 0)
+    target := start + Round((adjustedMS * freq) / 1000)
+    
+    ; 3. High-precision wait (non-blocking)
+    while (DllCall("QueryPerformanceCounter", "Int64*", &now := 0), now < target)
+        Sleep 0
+    
+    ; 4. Calculate actual duration and update error
+    actualMS := (now - start) * 1000 / freq  ; Floating-point for precision
+    tempoError := actualMS - timeInMs        ; Positive = too slow, Negative = too fast
+    
+    ; 5. Optional debug display
+    ; ShowToolTip("Target: " timeInMs "ms`nActual: " Round(actualMS,1) "ms`nError: " Round(tempoError,1) "ms")
+    /*
+    static freq := 0, init := DllCall("QueryPerformanceFrequency", "Int64*", &freq)
+    DllCall("QueryPerformanceCounter", "Int64*", &start := 0)
+    target := start + (timeInMs * freq) // 1000
+    
+    while (true) {
+        DllCall("QueryPerformanceCounter", "Int64*", &now := 0)
+        if (now >= target)
+            break
+        
+        HP_Sleep(0)  ; Allows hotkeys to interrupt
+    }
+        */
+}
+; --- image detection ---
+flashX := 116
+flashY := 1062
+flashInterval := 50    ; Time (ms) between checks (adjust based on game speed)
+brightnessThreshold := 30
+cooldownTime := 1000         ; Ignore flashes for 2s after 4-flash sequence
+
+flashCount := 0
+isFlashing := false
+inCooldown := false
+lastBrightness := 0  
+
+; periodically check flash around the screen to determine tempos
+SetTimer CheckFlash, flashInterval
+CheckFlash() {
+    global flashCount, isFlashing, inCooldown, lastBrightness
+    
+    if (inCooldown) {
+        ; ShowToolTip("Flash ignored (cooldown)", 500)
+        return
+    }
+    
+    currentColor := PixelGetColor(flashX, flashY)
+    currentBrightness := GetBrightness(currentColor)
+    ; ShowToolTip("Current brightness: " currentBrightness, 300)
+    
+    ; Detect flash start
+    if (currentBrightness - lastBrightness >= brightnessThreshold && !isFlashing) {
+        isFlashing := true
+        flashCount++
+        ShowToolTip(flashCount " flashes detected", 500)
+        
+        if (flashCount == 1) {
+            SetTimer defense, -1 ; testing
+        }
+        
+        if (flashCount >= 4) {
+            inCooldown := true
+            SetTimer EndCooldown, -cooldownTime
+            ; ShowToolTip("Starting cooldown...", 1000)
+        }
+    }
+    ; Detect flash end
+    else if (currentBrightness < lastBrightness) {
+        isFlashing := false
+    }
+    
+    lastBrightness := currentBrightness
+}
+
+; Calculate brightness from color (0-255)
+GetBrightness(color) {
+    ; Convert hex to RGB
+    red := (color >> 16) & 0xFF
+    green := (color >> 8) & 0xFF
+    blue := color & 0xFF
+    
+    ; Perceived brightness formula
+    return Floor(0.299 * red + 0.587 * green + 0.114 * blue)
+}
+
+; cooldown reset
+EndCooldown() {
+    global inCooldown, flashCount
+    ShowToolTip("Cooldown ended, ready for next sequence!", 500)
+    inCooldown := false
+    flashCount := 0
+}
+
 PlayOnce(funcName) {
     %funcName%()
-    Sleep 2397 ; tempo gap
-    return
 }
 
 PlayCurrent() {
@@ -213,9 +318,11 @@ PlayCurrent() {
                 break
             }
             
-            ; Small sleep to allow other threads to run
-            if (A_TimeSincePriorHotkey < 100)
-                Sleep(10)
+            /*; Small sleep to allow other threads to run
+            if (A_TimeSincePriorHotkey < 100){
+                HP_Sleep(10)
+            }*/
+                
         }
         
         isPlaying := false
